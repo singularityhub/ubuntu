@@ -1,2 +1,2 @@
-BootStrap: docker
-From: ubuntu:14.04
+BootStrap:docker
+From:ubuntu:14.04
