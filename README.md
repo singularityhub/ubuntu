@@ -7,24 +7,24 @@ This is a library of Ubuntu builds for Singularity images hosted on Singularity 
 
 ## What can I find here?
 
-The repository here serves the container under the namespace `singularityhub/centos`.
+The repository here serves the container under the namespace `singularityhub/ubuntu`.
 
 ## How does this work?
 
 We will submit this container to the (organizational) registry at 
 [singularityhub/registry-org](https://www.github.com/singularityhub/registry-org)
-for a final container uri corresponding to `https://singularityhub.github.io/registry-org/singularityhub/centos`. Specifically:
+for a final container uri corresponding to `https://singularityhub.github.io/registry-org/singularityhub/ubuntu`. Specifically:
 
 ```
 singularityhub/registry-org  --) the organization registry
-singularityhub/centos        --) a container collection
+singularityhub/ubuntu        --) a container collection
 ```
 
 then on GitHub pages:
 
 ```
 singularityhub.github.io/registry-org                       --) the registry interface
-singularityhub.github.io/registry-org/singularityhub/centos --) the added container
+singularityhub.github.io/registry-org/singularityhub/ubuntu --) the added container
 ```
 
 This works by way of the repository here (via the continuous integration)
