@@ -189,7 +189,7 @@ jobs:
 
               git add $NAMESPACE
               git status
-              git commit -m '$BRANCH_NAME' --allow-empty
+              git commit -a -m "\"${BRANCH_NAME}\"" --allow-empty
               git push origin ${BRANCH_NAME}
 
       - store_artifacts:
