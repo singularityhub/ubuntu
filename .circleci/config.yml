@@ -1,0 +1,216 @@
+# Python CircleCI 2.0 configuration file
+#
+# Check https://circleci.com/docs/2.0/language-python/ for more details
+#
+version: 2
+
+defaults: &defaults
+
+    # Set working directory where repository is cloned
+    working_directory: ~/repo
+    machine: true
+
+    # Environment Variables
+    environment:
+
+      # The GitHub username / reponame that the container will be submit to
+      - REGISTRY_BASE: singularityhub/registry-org
+
+      # Templates for the manifest, tags, and collection for the pull request
+      - MANIFEST_TEMPLATE: https://raw.githubusercontent.com/singularityhub/registry-org/master/_templates/MANIFEST_TEMPLATE.md
+      - TAGS_TEMPLATE: https://raw.githubusercontent.com/singularityhub/registry-org/master/_templates/TAGS_TEMPLATE.md
+      - COLLECTION_TEMPLATE: https://raw.githubusercontent.com/singularityhub/registry-org/master/_templates/COLLECTION_TEMPLATE.md
+
+
+
+jobs:
+  build:
+    <<: *defaults  
+    steps:
+      - checkout
+
+      # Download and cache dependencies
+      - restore_cache:
+          keys:
+          - v1-dependencies
+
+      - run:
+          name: install dependencies
+          command: | 
+            ls $HOME
+            if [ ! -d "/home/circleci/conda" ]; then
+                wget https://repo.continuum.io/miniconda/Miniconda3-latest-Linux-x86_64.sh
+                /bin/bash Miniconda3-latest-Linux-x86_64.sh -b -p $HOME/conda
+                export PATH=$HOME/conda/bin:$PATH
+                $HOME/conda/bin/pip install sregistry[all]
+            else
+                echo "Miniconda is already installed, continuing to build."
+            fi
+            chmod u+x ~/repo/.circleci/*.sh
+            /bin/bash ~/repo/.circleci/setup.sh
+
+      - save_cache:
+          paths:
+            - /home/circleci/conda
+          key: v1-dependencies
+
+      - run:
+          name: Get Templates
+          command: |
+              echo "Download Manifest, Tags, and Collection Templates!"
+              mkdir -p ~/repo/.templates
+              wget -O ~/repo/.templates/MANIFEST_TEMPLATE.md ${MANIFEST_TEMPLATE}        
+              wget -O ~/repo/.templates/TAGS_TEMPLATE.md ${TAGS_TEMPLATE} 
+              wget -O ~/repo/.templates/COLLECTION_TEMPLATE.md ${COLLECTION_TEMPLATE}
+              ls ~/repo/.templates
+
+      - run:
+          name: Build Containers
+          command: |
+            cd ~/repo
+            NAMESPACE=${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}
+            echo "Container namespace is $NAMESPACE"
+            # Create directory with namespace organization (pr will be based in /tmp/PR)
+            mkdir -p PR/$NAMESPACE
+            MANIFESTS=PR/$NAMESPACE/manifests
+            mkdir -p build
+            # The repository ID is in the inspect / metadata
+            # <meta name="octolytics-dimension-repository_id" content="167740989" />
+            # repo_id=167740989
+            repo_id=$(curl https://api.github.com/repos/${NAMESPACE} | jq --raw-output '.id')
+            echo "Repo ID is ${repo_id}"
+            build_number=$((CIRCLE_BUILD_NUM+1))
+            artifacts="https://${build_number}-${repo_id}-gh.circle-artifacts.com"
+            # Find all singularity recipes
+            for recipe in $(find $PWD -name "Singularity*")
+                do  
+                    container_dir=$(dirname ${recipe}.sif)
+
+                    # Only build the container if it's not frozen
+                    if [ -f "$container_dir/.frozen" ]; then
+                        echo "$container_dir/.frozen found, $recipe not marked for build."
+                        continue
+                    fi
+
+                    echo "Found changed recipe $recipe"
+                    /bin/bash ~/repo/.circleci/build.sh $recipe
+
+                    # Rename image based on shasum
+                    container_name=`sha256sum ${recipe}.sif | awk '{ print $1 }'`
+
+                    # Get the tag based on the extension
+                    filename=$(basename -- "$recipe")
+                    container_tag="${filename##*.}"
+                    if [ "${container_tag}" == "Singularity" ]; then
+                        container_tag=latest
+                    fi
+
+                    # Create the container (directory for artifacts)
+                    container_dir=${NAMESPACE}/${tag}  # singularityhub/centos/latest
+                    outdir=build/${container_dir}
+                    mkdir -p $outdir
+                    mv ${recipe}.sif $outdir/${container_name}.sif
+
+                    echo
+                    echo "Successfully built ${recipe}"
+                    echo "   saving to -> $outdir"
+                    echo "   sha256sum -> $container_name"
+                    echo "   tag       -> $container_tag"
+ 
+                    container_size=`du -k "${outdir}/${container_name}.sif" | cut -f1`
+                    echo "   size       -> $container_size"
+
+                    digest=${container_name}
+                    url=${artifacts}/$CIRCLE_NODE_INDEX/singularity-containers/$container_dir${container_name}.sif
+
+                    # Create the README.md with the MANIFEST template
+                    export url digest container_size
+                    mkdir -p $MANIFESTS/$container_tag
+                    envsubst < ~/repo/.templates/MANIFEST_TEMPLATE.md > $MANIFESTS/$container_tag/README.md
+                    cat $MANIFESTS/$container_tag/README.md
+
+                done
+
+              # build the container!
+              # You can add any other sregistry push commands for storage, and specify a client
+              # (and make sure your define the encrypted environment credentials in circle ci
+              # to push to your storage locations of choice
+
+              # Examples with upload to storage clients defined by sregistry
+              # https://singularityhub.github.io/sregistry-cli/clients
+              # Environment variables must be defined in CI encrypted secrets/settings
+              # https://circleci.com/docs/2.0/env-vars/
+              #- /bin/bash build.sh --uri collection/container --cli google-storage Singularity
+              #- /bin/bash build.sh --uri collection/container --cli google-drive Singularity
+              #- /bin/bash build.sh --uri collection/container --cli globus Singularity
+              #- /bin/bash build.sh --uri collection/container --cli registry Singularity
+
+      - persist_to_workspace:
+          root: ~/
+          paths:
+            - repo
+            
+
+  deploy:
+    <<: *defaults  
+    steps:
+      - attach_workspace:
+          at: ~/
+      - run:
+          name: Update if branch is not master
+          command: |
+              echo "Detected push to master, updating GitHub pages!"    
+              NAMESPACE=${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}
+              cd /tmp && git clone git@github.com:${REGISTRY_BASE}.git
+              cd $(basename ${REGISTRY_BASE})
+
+              # Set the user name and repo name
+              git config user.name "${CIRCLE_USERNAME}"
+              git config user.email "${CIRCLE_USERNAME}@users.noreply.github.com"
+
+              # Checkout a new (or existing) branch
+              BRANCH_NAME=update/$NAMESPACE
+              git checkout -b "${BRANCH_NAME}" || git checkout $BRANCH_NAME
+              git pull origin ${BRANCH_NAME} || echo "No branch ${BRANCH_NAME} exists yet."
+
+              # Copy the entire generated content to registry
+              cp -R ~/repo/PR/* .
+                
+              # Generate the collection README, if doesn't exist
+              if [ ! -f "$NAMESPACE/README.md" ]; then
+                  cp ~/repo/.templates/COLLECTION_TEMPLATE.md $NAMESPACE/README.md
+              fi
+
+              # Generate the tags file, if it doesns't exist
+              if [ ! -f "$NAMESPACE/tags/README.md" ]; then
+                  mkdir -p $NAMESPACE/tags
+                  cp ~/repo/.templates/TAGS_TEMPLATE.md $NAMESPACE/tags/README.md
+              fi
+
+              git add $NAMESPACE
+              git status
+              git commit -m '$BRANCH_NAME' --allow-empty
+              git push origin ${BRANCH_NAME}
+
+      - store_artifacts:
+          path: ~/repo/build
+          destination: singularity-containers
+
+workflows:
+  version: 2
+  build_deploy:
+    jobs:
+      - build:
+          filters:
+            branches:
+              ignore: master
+      - hold:
+          type: approval
+          requires: 
+            - build
+      - deploy:
+          requires: 
+            - hold
+          filters:
+            branches:
+              ignore: master
